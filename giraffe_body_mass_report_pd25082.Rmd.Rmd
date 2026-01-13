@@ -1,0 +1,221 @@
+---
+title: "Determinants of body mass in wild giraffe (pd25082)"
+author: "Mohd Kamran Khan"
+date: "14th Dec 2025"
+output: html_document
+---
+
+# Background
+
+The persistence of wildlife populations can be impacted by body mass, which is a significant determinant of individual health and survival (Clements & Ozgul 2016; Cerini et al. 2023). African ungulates are essential to the health of ecosystems, and conservation requires an understanding of the factors influencing body mass.
+
+The objective of this study is to determine the environmental and ecological factors that influence giraffe body mass (kg), taking into consideration any potential systematic bias resulting from variations in parks and observers.
+
+# Data
+
+In order to comprehend the data format. The final dataset consisted of 290 individual giraffes, each contributing a
+kilogram-based single body mass measurement.  Environmental predictors comprised both categorical descriptors of habitat and site characteristics and continuous factors, such as average annual rainfall, distance to water, and predator population.  A hierarchical structure with possible site-level and observer-related variation was produced by gathering data from several parks and observers.
+
+
+```{r}
+# # Load required packages for data manipulation and cleaning
+library(tidyverse)
+library(janitor)
+
+#  Read the dataset and standardise column names
+
+dat_long <- read_tsv("mass_pd25082.tsv.gz") |>
+  clean_names()
+
+glimpse(dat_long)
+```
+
+# Individuals & reshaping
+
+Despite the fact that each giraffe's body mass (kg) was only measured once, the dataset was given in a lengthy format with each individual appearing in several rows that corresponded to various environmental factors. These repeating rows indicate triplicate measures linked to the same person rather than independent observations, as the coursework instructions make clear.
+
+The premise of independence would be broken and the sample size would be artificially increased if these rows were treated as distinct people.  I established a unique person identity and rearranged the dataset so that each row matched to a single individual, with environmental factors saved as distinct columns, in order to guarantee that each giraffe was represented only once in the analysis.
+ This reorganization made it possible to analyze body mass at the individual's biologically significant level while keeping all relevant environmental data.
+
+```{r}
+#  Each individual appears as three rows (one per environmental variable);
+# create an individual ID assuming triplicate measurements per individual
+
+dat_long <- dat_long |>
+  mutate(ind_id = (row_number() - 1) %/% 3 + 1)
+
+# Reshape data so each row represents one individual
+dat <- dat_long |>
+  pivot_wider(
+    id_cols = c(ind_id, student_id, species, park, observer,
+                body_mass, landscape, vegetation, lion_presence),
+    names_from = env_var,
+    values_from = env_value
+  )
+
+glimpse(dat)
+
+```
+
+# Data cleaning
+
+I checked the categorical variables for clear formatting mistakes and spelling inconsistencies, such as different or misspelled labels that represented the same category, before beginning any analysis.  To guarantee that every category was handled uniformly throughout the dataset, these discrepancies were standardized.  Furthermore, all grouping variables were explicitly changed to factors, including park, observer, habitat type, and landscape.  In order to prevent categorical predictors from being mistakenly handled as continuous variables, this step was required to guarantee that the statistical models and visualization tools appropriately interpreted them.
+
+```{r}
+dat <- dat |>
+  mutate(
+    lion_presence = case_when(
+      lion_presence %in% c("Present","Preseet","Preesnt") ~ "Present",
+      lion_presence %in% c("Absent","Asbent") ~ "Absent",
+      TRUE ~ lion_presence
+    ),
+    across(c(park, observer, landscape, vegetation, lion_presence), as.factor)
+  )
+
+```
+
+# Exploratory analysis
+
+I investigated the distribution of giraffe body mass and its connections to several environmental and habitat-related factors using visualization.
+ Significant differences in body mass between individuals and sample locations were shown by exploratory plots.  Significant scatter was seen in continuous predictors, indicating that any correlations with body mass were probably weak or context-dependent.  On the other hand, category variables like park and vegetation type seemed to capture more noticeable variations in body mass.
+
+ These exploratory patterns were utilized to inform model specification and direct the choice of suitable predictors rather than to make formal conclusions.
+ The general distribution of giraffe body mass was visualized using a histogram, and color was added to enhance clarity and facilitate interpretation.
+
+
+```{r warning=FALSE, message=FALSE}
+ggplot(dat, aes(body_mass)) +
+  geom_histogram(
+    bins = 30,
+    fill = "steelblue",
+    colour = "black",
+    alpha = 0.8
+  ) +
+  labs(x = "Body mass (kg)", y = "Count") +
+  theme_minimal()
+
+
+ggplot(dat, aes(distance_to_water_km, body_mass)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+```
+
+
+
+
+# Visualisation
+
+Plots where categorical groups were necessary did not include observations with missing category values in order to improve visual clarity.  This action was only done for the purpose of visualization in order to prevent the display of unclear or unhelpful categories.  To make sure that no data was needlessly destroyed, all available observations—including those with missing categorical values—were kept for model fitting.  In order to improve interpretability and enable visual comparison of body mass across habitat and site classifications, boxplots were colored by category.
+
+```{r}
+  ggplot(
+  dat |> filter(!is.na(vegetation)),
+  aes(x = vegetation, y = body_mass, fill = vegetation)
+) +
+  geom_boxplot(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "Vegetation type", y = "Body mass (kg)") +
+  theme(legend.position = "none")
+```
+
+```{r}
+ggplot(
+  dat |> filter(!is.na(landscape)),
+  aes(x = landscape, y = body_mass, fill = landscape)
+) +
+  geom_boxplot(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "Landscape", y = "Body mass (kg)") +
+  theme(legend.position = "none")
+```
+
+
+
+```{r}
+ggplot(
+  dat,
+  aes(x = park, y = body_mass, fill = park)
+) +
+  geom_boxplot(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "Park", y = "Body mass (kg)") +
+  theme(legend.position = "none")
+
+```
+
+# Statistical model
+
+Because body mass is a continuous variable and measurements were collected from multiple parks and observers, I developed a linear mixed-effects model. Baseline body mass can differ between sites and observers by using park and observer as random intercepts rather than estimating a distinct fixed effect for every level.  This method increases the generality of fixed effect estimates, lowers the possibility of pseudoreplication, and takes non-independence among observations into consideration. The Gaussian error structure's presumptions were sufficiently satisfied, according to residual diagnostics.
+ Park and the observer were included as random effects to account for systematic bias.  Body mass was log-transformed to enhance residual behavior.
+ A log-normal distribution of body mass on the original scale is equivalent to the model's assumption of normally distributed residuals.
+
+
+```{r}
+library(lme4)
+library(lmerTest)
+
+dat <- dat |> mutate(log_mass = log(body_mass))
+
+# Fit a linear mixed-effects model with park and observer as random effects
+# Body mass is log-transformed to improve residual behaviour
+m1 <- lmer(
+  log_mass ~
+    scale(average_annual_rainfall_mm) +
+    scale(distance_to_water_km) +
+    scale(predator_density_per_sq_km) +
+    vegetation + landscape + lion_presence +
+    (1 | park) + (1 | observer),
+  data = dat
+)
+
+summary(m1)
+```
+
+# Model diagnostics
+
+To determine whether the fitted linear mixed-effects model's assumptions were sufficiently satisfied, model diagnostics were looked at.  Visual examination of residual plots and normal Q-Q plots revealed no significant departures from homoscedasticity or normality, suggesting that the error distribution and model structure selected were suitable for the data.
+
+```{r}
+qqnorm(resid(m1))
+qqline(resid(m1))
+
+plot(fitted(m1), resid(m1))
+
+```
+
+# Results
+
+Giraffe body mass clearly correlated with plant type and distance to water after controlling for systematic variations between parks and observers. Body mass rose as the distance to the water grew (estimate = 0.047, p = 0.0019), or around 5% more mass per standard deviation increase in distance. The body mass of giraffes in open vegetation was considerably lower than that of animals in dense vegetation (estimate = −0.061, p = 0.041), which is equivalent to a 6% decrease in mass.
+
+The average annual rainfall, predator density, topography, and presence of lions did not significantly affect body mass (all p \> 0.05).
+
+The lack of statistically significant effects for lion presence, landscape, rainfall, and predator density does not mean that these factors are insignificant.  Instead, it shows that, after accounting for site-level and observer-related variation, there was not enough evidence to find consistent relationships between these characteristics and body mass within the parameters of the available data.
+
+The inclusion of these factors to account for systematic bias was supported by random effects, which revealed significant variance between parks and observers.
+
+Body mass increased with increasing distance to water.
+
+
+```{r}
+library(broom.mixed)
+
+tidy(m1, effects = "fixed", conf.int = TRUE)
+
+```
+
+# Discussion
+
+This analysis shows that the spatial distribution of resources and the shape of the habitat affect giraffe body mass. Since giraffes are less dependent on frequent access to water than many other ungulates, higher body mass at farther distances from water may indicate less competition or availability to higher-quality feed. Reduced browsing chances in more open settings are linked with lower body mass in open vegetation as opposed to thick vegetation.
+
+However, there was no discernible correlation between body mass and rainfall, predator density, or the presence of lions. This suggests that these factors may affect giraffe demography in ways other than through direct effects on individual condition. A significant amount of variation was explained by differences between parks and observers, underscoring the significance of taking site-level and measurement-related bias into account in ecological analyses.
+
+There are a few restrictions to be aware of. There is limited insight into temporal variations in body mass because the data are a snapshot in time and do not include repeated assessments of people.  Furthermore, some of the remaining variation may be explained by potentially significant individual-level factors that were not accessible, such as age, sex, and reproductive status.  A more thorough knowledge of the factors influencing body mass would be possible with future research that included longitudinal data and additional biological variables.
+
+Because body condition is directly related to survival and reproductive success, it is crucial from a conservation standpoint to discover habitat factors linked to higher body mass.  These findings demonstrate how habitat structure and spatial resource distribution may contribute to the maintenance of healthy giraffe populations in the face of shifting environmental conditions.
+
+
+# References
+
+Clements & Ozgul (2016) Nature Communications 7(1), 10984\
+Cerini et al. (2023) Nature Ecology & Evolution 7(3), 320–333
